@@ -1,0 +1,407 @@
+---
+title: "Descriptives of data from Vietnam"
+output:
+  html_document:
+    df_print: paged
+date: "2022-11-16"
+editor_options: 
+  chunk_output_type: console
+---
+
+In this document we provide our code for the figures that describe the Vietnamese data. The data itself is confidential and therefore not available.
+
+For a cleaner version of several parts of this code, we refer to our R package 'doublIn' that is available from CRAN.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Load data and software}
+
+# Data
+dat <- readRDS("data/Prepared_data.rds")
+linelist <- readRDS("data/linelist.rds")
+dat_lt1 <- readRDS("data/dat_lt1.rds")
+dat_lt2 <- readRDS("data/dat_lt2.rds")
+
+# Software
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+library(tidyr)
+library(EpiCurve)
+library(RColorBrewer)
+library(ggpmisc)
+library(incidence)
+library(interval)
+library(ggpattern)
+library(egg)
+library(magrittr)
+source("fun_epicurve_adapted.R")
+library(consort) # flowchart
+library(patchwork)
+library(patchwork)
+library(cowplot)
+
+# Functions for descriptives
+summarise_categorical <- function(data, var){
+  data %>% group_by({{var}}) %>% summarise(n = n()) %>% mutate(perc = round(100*n / sum(n), 1))
+}
+
+calculate_percentage_missing <- function(data){
+  
+  out <- matrix(nrow = ncol(data), ncol = 2)
+  
+  for (i in 1:ncol(data)){
+    out[i, 1] <- colnames(data)[i]
+    out[i, 2] <- round( 100 * sum(is.na(data[,i])) / nrow(data), 1)
+  }
+  
+  out
+}
+
+summarise_continuous <- function(data, var){
+  data %>% summarise(n = n(), min = min({{ var }}), max = max({{ var }}), mean = mean({{ var }}), sd = sd({{ var }}), median = median({{ var }}), IQR = paste(summary({{ var }})[2], summary({{ var }})[5], sep = "; ") )
+}
+
+
+```
+
+
+```{r Choose colors}
+
+# Choose colors.
+
+cols <- brewer_pal(palette = "Greys")(9)[c(4,7)]
+
+```
+
+
+```{r Timeline}
+
+# - ~ - ~ - ~ - ~ - ~ - Timeline - ~ - ~ - ~ - ~ - ~ -- ~ - ~ - ~ - ~ - ~ - - ~
+
+# Preparation
+
+linelist$id_numeric <- parse_number(linelist$id) %>% as.numeric()
+dat$id_numeric <- parse_number(dat$Case_ID) %>% as.numeric()
+linelist <- left_join(linelist, dat %>% select(id_numeric, set))
+inc_obj <- incidence(linelist$first_date_test_positive, 1)
+inc_peak <- find_peak(inc_obj)
+
+linelist$first_date_test_positive[which(linelist$first_date_test_positive >= inc_peak)] %>% length()
+100*linelist$first_date_test_positive[which(linelist$first_date_test_positive > inc_peak)] %>% length() /nrow(linelist)
+inc_obj_new <- incidence(linelist$first_date_test_positive[which(linelist$first_date_test_positive < inc_peak)], 1)
+
+inc_fit <- incidence::fit(inc_obj_new)
+r <- inc_fit$info$r
+r025 <- inc_fit$info$r.conf[1]
+r975 <- inc_fit$info$r.conf[2]
+
+est_se <- (r975 - r025)/(2*1.96)
+qnorm(p = c(0.025, 0.975), mean = r, sd = est_se); c(r025, r975)
+
+linelist$set[linelist$set == "excluded"] <- NA
+
+inc_obj <- incidence(linelist$first_date_test_positive, 1, groups = linelist$set)
+plot(inc_obj)
+
+inc_obj$inclusion <- ifelse(inc_obj$dates < inc_peak, "exponential growth", "delay in reporting")
+
+# Plot
+
+p_epicurve <- 
+  ggplot() + geom_col(aes( x = inc_obj$dates, y = rowSums(inc_obj$counts), fill = inc_obj$inclusion), col = "black") + 
+            geom_col_pattern(aes( x = inc_obj$dates, y = inc_obj$counts[,1]), fill = NA, col = "black",
+                             
+                 # For the pattern:
+                   pattern_fill = "black",
+                   pattern_angle = 45,
+                   pattern_density = 0.001,
+                   pattern_spacing = 0.02) +
+    
+  geom_line(aes(x = as.POSIXct(inc_fit$info$pred$dates), y = inc_fit$info$pred$fit, linetype = "doubling time (6.55 days)"), color = "black" ) + 
+ geom_line(aes(x = as.POSIXct(inc_fit$info$pred$dates), y = inc_fit$info$pred$lwr, linetype = "confidence limits (95%, 6.05-7.14 days)"), ) +
+ geom_line(aes(x = as.POSIXct(inc_fit$info$pred$dates), y = inc_fit$info$pred$upr, linetype = "confidence limits (95%, 6.05-7.14 days)")) +
+ theme_bw() + coord_cartesian(ylim = c(0,2500)) + 
+  labs(x = "First positive test day (2021)", y = "Individuals (n)", title = "", fill = "Epidemic phase", linetype = "Estimated growth") +
+  scale_fill_manual(values = cols[c(2,1)]) +
+  theme(legend.position = c(0.3, 0.55)) + theme(panel.border = element_rect(size = 0.5, linetype = "solid",
+                                   colour = "black"))
+
+```
+
+
+```{r Age and sex histogram}
+
+# - ~ - ~ - ~ - ~ - ~ - Histogram age and sex - ~ - ~ - ~ - ~ - ~ -- ~ - ~ - ~ 
+
+# Preparation
+
+dat_for_p <- dat %>% filter(Case_ID %in% dat_lt1$id)
+
+# Plot
+
+p_agesex <- ggplot() +
+  geom_histogram(data = dat_for_p %>% filter( Sex == "male" ),
+                 aes(y = -(..density..) * 975, x = age2021, fill = "male"),
+                 col = "black", binwidth = 1) +
+            scale_y_continuous(labels = abs) + 
+  geom_histogram(data = dat_for_p %>% filter( Sex == "female"),
+                 aes(y = ..density.. * 976, x = age2021, fill = "female"),
+                 col = "black", binwidth = 1) +
+  labs(x = "Age (start of 2021)", y = "Individuals (n)", fill = "Sex") +
+  
+  theme_bw() +  theme(legend.position = c(0.8, 0.2))
+
+p_agesex  <- p_agesex  + theme(panel.border = element_rect(size = 0.5, linetype = "solid",
+                                   colour = "black")) + 
+  scale_fill_manual(values = cols)
+
+```
+
+
+```{r Preparation for figures exposure and shedding windows}
+
+# - ~ - ~ - ~ - ~ - ~ - Preparation for figures two windows - ~ - ~ - ~ - ~ - ~ 
+
+dat_lt1$exposure_window_width <- dat_lt1$L1 - dat_lt1$L0
+dat_lt1$shedding_window_width <- dat_lt1$R1 - dat_lt1$R0
+dat_lt2$exposure_window_width <- dat_lt2$L1 - dat_lt2$L0
+dat_lt2$shedding_window_width <- dat_lt2$R1 - dat_lt2$R0
+
+dat_lt1$R0beforeL1 <- ifelse(dat_lt1$R0 < dat_lt1$L1, T, F)
+
+temp1 <- data.frame(exp_window = "definition 1", window_width = 
+                      dat_lt1$exposure_window_width, window = "exposure", 
+                    Case_ID = dat_lt1$id)
+temp2 <- data.frame(exp_window = "definition 2", window_width = 
+                      dat_lt2$exposure_window_width, window = "exposure", 
+                    Case_ID = dat_lt2$id)
+temp3 <- data.frame(exp_window = "definition 1", window_width = 
+                      dat_lt1$shedding_window_width, 
+                    window = "start of shedding", Case_ID = dat_lt1$id)
+temp4 <- data.frame(exp_window = "definition 2", window_width = 
+                      dat_lt2$shedding_window_width, 
+                    window = "start of shedding", Case_ID = dat_lt2$id)
+
+dat_for_p_windows <- rbind(temp1, temp2, temp3, temp4)
+
+```
+
+
+```{r Exposure windows}
+
+# - ~ - ~ - ~ - ~ - ~ - Plot the exposure window widths - ~ - ~ - ~ - ~ - ~ -- ~
+
+# Plot
+
+p_exposure_windows <- ggplot() +
+  geom_histogram(data = dat_for_p_windows %>% filter(exp_window == "definition 1" & window == "exposure"),
+                 aes(y = -(..density..) * 1951, x = window_width, fill = exp_window),
+                 col = "black", binwidth = 1) +
+            scale_y_continuous(labels = abs) + 
+  geom_histogram(data = dat_for_p_windows %>% filter(exp_window == "definition 2"  & window == "exposure"),
+                 aes(y = ..density.. * 1951, x = window_width, fill = exp_window),
+                 col = "black", binwidth = 1) +
+  labs(x = "Exposure window width (days)", y = "Individuals (n)", fill = "Exposure window") +
+  
+  theme_bw() + guides(fill = "none") + 
+  geom_text(aes(x = c(20,20), y = c(-105, 105), label = c("strict definition", "loose definition")))
+
+p_exposure_windows <- p_exposure_windows + theme(panel.border = element_rect(size = 0.5, linetype = "solid",
+                                   colour = "black")) + 
+  scale_fill_manual(values = cols) & xlim(c(min(dat_for_p_windows$window_width), max(dat_for_p_windows$window_width)))
+
+```
+
+
+```{r Shedding windows}
+
+# - ~ - ~ - ~ - ~ - ~ - Plot the start-of-shedding window widths - ~ - ~ - ~ -
+
+# Preparation
+
+N <- 1951
+
+dat_lt1$Windows <- ifelse(dat_lt1$R0 < dat_lt1$L1, "overlap", "distinct")
+temp_dat <- dat_lt1 %>% ungroup()  %>% select(id, Windows) 
+colnames(temp_dat)[1] <- "Case_ID"
+temp <- left_join(dat_for_p_windows, temp_dat)
+temp$Windows <- as.factor(temp$Windows)
+
+temp1 <- temp %>% filter(exp_window == "definition 1" & 
+                                    window == "start of shedding")
+temp2 <- temp %>% filter(exp_window == "definition 2" & 
+                                    window == "start of shedding")
+
+# Plot
+
+p_shedding_windows <- ggplot() +
+  
+  geom_histogram_pattern(data = temp1,
+                 aes(y = -(..count.. / (sum(..count..) * ..width..)) * N, x = window_width, 
+                     fill = exp_window, 
+                     pattern_color = Windows,
+                     pattern_fill = Windows, 
+                     pattern_density = Windows),
+                 col = "black", binwidth = 1, 
+                 
+                 # For the pattern:
+                   pattern_fill = "black",
+                   pattern_angle = 45,
+                   pattern_spacing = 0.02,
+                   pattern_key_scale_factor = 0.4) +
+                  scale_y_continuous(labels = abs) +
+  
+    geom_histogram_pattern(data = temp2,
+                 aes(y = (..count.. / (sum(..count..) * ..width..)) * N, x = window_width, 
+                     fill = exp_window, 
+                     pattern_color = Windows,
+                     pattern_fill = Windows, 
+                     pattern_density = Windows),
+                 col = "black", binwidth = 1, 
+                 
+                 # For the pattern:
+                   pattern_fill = "black",
+                   pattern_angle = 45,
+                   pattern_spacing = 0.02,
+                   pattern_key_scale_factor = 0.4) +
+  
+                   scale_pattern_color_manual(values = 
+                                              c(overlap ='black', distinct = "black" )) +
+                  scale_pattern_density_manual(values = c(overlap = 0, distinct = 0.001)) +
+                scale_fill_manual(values = cols) + 
+  guides(fill = "none", pattern_fill = "none") +
+  labs(x = "Start-of-shedding window width (days)", y = "Individuals (n)") +
+  
+  theme_bw() + theme(legend.position = "right") + theme(legend.position = c(0.3, 0.83)
+                                                        ) + theme(panel.border = element_rect(size = 0.5, linetype = "solid",
+                                   colour = "black")) +
+  geom_text(aes(x = c(40), y = c(-100), label = c("strictly defined exposure windows")))
+
+p_shedding_windows
+
+```
+
+
+```{r Number of tests per individual}
+
+# - ~ - ~ - ~ - ~ - ~ - Tests per individual - ~ - ~ - ~ - ~ - ~ -- ~ - ~ - ~ -
+
+# Preparation
+
+dat_for_p <- dat %>% filter(Case_ID %in% dat_lt1$id)
+dat_for_p_tests_included <- cbind(table(dat_for_p$n_tests_for_p), 
+                         round(100*prop.table(table(dat_for_p$n_tests_for_p)),1))
+
+dat_for_p_tests_included <- data.frame(number_of_tests = rownames(dat_for_p_tests_included), 
+           count = dat_for_p_tests_included[ , 1],
+           perc = dat_for_p_tests_included[ , 2],
+           set = "included"
+           )
+
+dat_for_p <- dat %>% filter( (Case_ID %in% dat_lt1$id) == FALSE )
+dat_for_p_tests_excluded <- cbind(table(dat_for_p$n_tests_for_p), 
+                         round(100*prop.table(table(dat_for_p$n_tests_for_p)),1))
+
+dat_for_p_tests_excluded <- data.frame(number_of_tests = rownames(dat_for_p_tests_excluded), 
+           count = dat_for_p_tests_excluded[ , 1],
+           perc = dat_for_p_tests_excluded[ , 2],
+           set = "excluded"
+           )
+
+temp <- rbind(dat_for_p_tests_excluded, dat_for_p_tests_included)
+
+# Plot
+
+( p_tests <- ggplot(data = temp, 
+              aes(x = number_of_tests, y = count, fill = set)) +
+  geom_bar(stat = "identity", color = "black") + theme_bw() + theme(legend.position = c(0.8, 0.75)) +
+    labs(x = "Number of tests per individual", y = "Individuals (n)", fill = "Data") + theme(panel.border = element_rect(size = 0.5, linetype = "solid",
+                                   colour = "black"))
+)
+
+```
+
+
+```{r Combined figure}
+
+# - ~ - ~ - ~ - ~ - ~ - Combine the subfigures - ~ - ~ - ~ - ~ - ~ -- ~ - ~ - ~ 
+
+# Colors and surrounding panel
+
+p_agesex <- p_agesex + theme(panel.border = element_rect(size = 0.5, linetype = "solid",
+                                   colour = "black")) +
+  scale_fill_manual(values = cols)
+
+p_shedding_windows <- p_shedding_windows + theme(panel.border = element_rect(size = 0.5, linetype = "solid",
+                                   colour = "black"))  + theme(legend.background = element_blank()) +
+  scale_fill_manual(values = cols) & xlim(c(min(dat_for_p_windows$window_width), max(dat_for_p_windows$window_width)))
+   
+
+p_tests <- p_tests + theme(panel.border = element_rect(size = 0.5, linetype = "solid",
+                                   colour = "black")) +
+  scale_fill_manual(values = cols)
+
+# Combine the subfigures
+
+p_fig2 <- p_epicurve / (p_tests + p_exposure_windows) / (p_agesex + p_shedding_windows)
+ 
+p_fig2 <- p_fig2 + plot_annotation(tag_levels = 'a')
+
+p_fig2 <- p_fig2 & theme(text = element_text(family = "Helvetica"))
+
+ggsave("graphs/Figure_2_Characteristics.jpeg", width = 8, height = 10)
+
+```
+
+
+```{r Supplement Figure Collinearity}
+
+# - ~ - ~ - ~ - ~ - ~ - Plot collinearity - ~ - ~ - ~ - ~ - ~ -- ~ - ~ - ~ - ~ -
+
+# Preparation
+
+temp <- readRDS("results/parameters_alliters.RDS")
+   
+  ptemp <- ggplot(temp, aes(theta, kappa)) + geom_jitter(size = 0.5, alpha = 0.3, color = "darkgrey") + theme_bw() + scale_color_distiller(type = "seq",
+                                                                                                                direction = 1,
+                                                                                                                palette = "Greys") +
+    guides(col = guide_colourbar(barwidth = 14, barheight = 0.5)) +
+    theme(legend.position = "bottom")
+  
+# Plot
+  
+  p1 <- ggplot(temp, aes(theta, kappa)) + 
+    geom_jitter(size = 0.5, color = "darkgrey", alpha = 0.3) + theme_bw() + 
+    scale_color_distiller(type = "seq", direction = 1,
+    palette = "Greys") +
+    guides(col = "none") + labs(
+    x = expression(hat(theta)), y = expression(hat(kappa))) + expand_limits(x = 0, y = 0)
+  
+  p2 <- ggplot(temp, aes(theta, delta)) + geom_jitter(size = 0.5, color = "darkgrey", alpha = 0.3) + theme_bw() + scale_color_distiller(type = "seq",
+                                                                                                   direction = 1,
+                                                                                                   palette = "Greys") +
+    guides(col = "none") + labs(
+      x = expression(hat(theta)), y = expression(hat(delta)) ) + expand_limits(x = 0, y = 0)
+  
+  p3 <- ggplot(temp, aes(kappa, delta)) + geom_jitter(size = 0.5, color = "darkgrey", alpha = 0.3) + theme_bw() + scale_color_distiller(type = "seq",
+                                                                                                   direction = 1,
+                                                                                                   palette = "Greys") +
+    labs(
+      x = expression(hat(kappa)), y = expression(hat(delta))) +
+    guides(col = "none") + expand_limits(x = 0, y = 0)
+  
+  legend_all <- cowplot::get_legend(ptemp)
+  p_all <- (p1 + p2 + p3)
+  p_all <- p_all + plot_layout(widths = c(3,3,3), heights = unit(c(4), c('cm')))
+  p_all <- p_all  + plot_annotation(tag_levels = list(c("a", "b", "c"))) & theme(text = element_text(family = "Helvetica"))
+  
+  p_all
+  ggsave("graphs/Supplement_Figure_Collinearity.jpeg", width = 8, height = 4)
+
+```

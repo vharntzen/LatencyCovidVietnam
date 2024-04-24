@@ -1,0 +1,524 @@
+---
+title: "Visualize the estimates based on data from Vietnam"
+output: html_document
+date: "2023-06-16"
+editor_options: 
+  chunk_output_type: console
+---
+
+In this document we provide our code for the figures that visualize the estimates using Vietnamese data. The data itself is confidential and therefore not available.
+
+For a cleaner version of several parts of this code, we refer to our R package 'doublIn' that is available from CRAN.
+
+```{r Prerequisites, include = FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load packages
+library(dplyr)
+library(ggplot2)
+library(magrittr)
+library(flexsurv)
+library(incidence)
+library(ggpmisc)
+library(ggh4x)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(ggh4x)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(ggh4x)
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+library(flexsurv)
+library(dplyr)
+library(tidyr)
+
+```
+
+
+```{r Estimates from literature}
+
+# ~~~~~~~~~~ Enter the estimates from literature ~~~~~~~~~~
+xin <- data.frame(est = c(NA, 5.03, 10.58), lower_CI = c(NA, 4.63, 9.56), 
+                  upper_CI = c(NA, 5.41, 11.56), 
+                  distribution = c("gamma", "gamma", "gamma"), 
+                  software = rep("Xin et al.", 3 ), 
+                      N = rep(177, 3), CI_type = rep("CI", 3),
+           vaccination = rep("unknown", 3), variant = rep("unknown", 3),
+           infection_risk = rep("constant", 3), quantile = c("mean", "median", 
+                                                             "95th percentile"))
+
+kang <- data.frame(est = c(3.9, NA, 8.8), 
+                   lower_CI = c(3.3, NA, 7.5), 
+                   upper_CI = c(4.5, NA, 10.7), 
+                   distribution = rep("Weibull", 3), 
+                   software = rep("Kang et al.", 3 ), 
+                   N = rep(93, 3), 
+                   CI_type = rep("CrI", 3),
+                   vaccination = rep("unvaccinated", 3), 
+                   variant = rep("Delta", 3),
+                   infection_risk = rep("constant", 3), 
+                   quantile = c("mean", "median", "95th percentile"))
+
+jiang <- data.frame(est = c(2.65, NA, 10.58), 
+                   lower_CI = c(2.33, NA, 9.56), 
+                   upper_CI = c(2.78, NA, 11.56 ), 
+                   distribution = rep("unknown/none", 3), # gamma/lognormal 
+                   software = rep("Jiang et al.", 3 ), 
+                   N = rep(467, 3), 
+                   CI_type = rep("CI", 3),
+                   vaccination = rep("unknown", 3), 
+                   variant = rep("Omicron", 3),
+                   infection_risk = rep("constant", 3), 
+                   quantile = c("mean", "median", "95th percentile"))
+
+ma <- data.frame(est = c(NA, 6.0, NA), 
+                   lower_CI = c(NA, NA, NA), 
+                   upper_CI = c(NA, NA, NA), 
+                   distribution = rep("empirical", 3), 
+                   software = rep("Ma et al.", 3 ), 
+                   N = rep(40, 3), 
+                   CI_type = rep("n.a.", 3),
+                   vaccination = rep("partially vaccinated", 3), 
+                   variant = rep("Delta", 3),
+                   infection_risk = rep("constant", 3), 
+                   quantile = c("mean", "median", "95th percentile"))
+
+li_I <- data.frame(est = c(4.40, 3.95, 9.07), 
+                   lower_CI = c(4.24, 3.81, 8.95), 
+                   upper_CI = c(4.63, 4.16, 9.61), 
+                   distribution = rep("gamma", 3), 
+                   software = rep("Li et al. (I)", 3 ), 
+                   N = rep(672, 3), 
+                   CI_type = rep("n.a.", 3),
+                   vaccination = rep("partially vaccinated", 3), 
+                   variant = rep("Delta", 3),
+                   infection_risk = rep("constant", 3), 
+                   quantile = c("mean", "median", "95th percentile"))
+
+li_II <- data.frame(est = c(2.58, 2.28, 5.48), 
+                   lower_CI = c(2.48, 2.19, 5.22), 
+                   upper_CI = c(2.68, 2.38, 5.74), 
+                   distribution = rep("gamma", 3), 
+                   software = rep("Li et al. (II)", 3 ), 
+                   N = rep(885, 3), 
+                   CI_type = rep("n.a.", 3),
+                   vaccination = rep("partially vaccinated", 3), 
+                   variant = rep("Omicron", 3),
+                   infection_risk = rep("constant", 3), 
+                   quantile = c("mean", "median", "95th percentile"))
+
+dat_lit <- rbind(xin, jiang, ma, kang, li_I, li_II)
+dat_lit$source <- "Literature"
+
+dat_lit$authors <- dat_lit$software
+dat_lit$exp_window <- dat_lit$source
+dat_lit$f <- dat_lit$distribution
+dat_lit$g <- dat_lit$infection_risk
+dat_lit$par <- dat_lit$quantile
+dat_lit$par[which(dat_lit$par == "median")] <- 0.5
+dat_lit$par[which(dat_lit$par == "95th percentile")] <- 0.95
+
+dat_lit <- dat_lit %>% select(est, lower_CI, upper_CI, par, software, f, g, 
+                              exp_window)
+
+saveRDS(dat_lit, "results/Literature_latency_time_estimates.RDS")
+
+```
+
+
+```{r Model estimates}
+
+# ~~~~~~~~~~ Change the settings here ~~~~~~~~~~
+run_name <- "Final_estimates"
+date_of_today <- "150324"
+
+# ~~~~~~~~~~ Load the files ~~~~~~~~~~
+opt <- readRDS(
+paste("results/Options_", run_name, "_on_", 
+            date_of_today, ".RDS", sep = "" ))
+n_runs <- nrow(opt)
+
+not_duplicate_rows <- which( (opt$infection_risk_distribution == "constant" & opt$r_mean != 0.1058827) ==F) 
+
+for(run in not_duplicate_rows){
+
+   estimates <- try(readRDS(paste(
+"results/Estimates_Run", 
+run, "_", run_name, "_on_", date_of_today, ".RDS", sep = "")))
+   if(class(estimates) == "try-error"){
+     cat("File according to run ", run, " is not available.")
+     next
+   }
+   
+   estimates$exp_window <- opt$exposure_window_definition[run]
+   estimates$data_set <- opt$data_set[run]
+   estimates$r <- opt$r_mean[run]
+   estimates$g_label <- ifelse(
+     opt$infection_risk_distribution[run] == "exp_growth", 
+                         paste("exp. growth: r = ", 
+                               round(opt$r_mean[run], 3)), 
+                         "constant (uniform)")
+   
+if(run == 1){results_tab <- estimates} else {
+  
+  results_tab <- rbind(results_tab, estimates)
+  
+  }
+ 
+}
+
+saveRDS(results_tab, paste("results/EstimatesMarch2024.RDS"))
+
+```
+ 
+
+```{r Figure Estimates}
+
+results_tab <- readRDS(paste("results/EstimatesMarch2024.RDS"))
+
+pd <- position_dodge(0.6) 
+
+
+# ~~~~~~~~~~ Preparation - literature ~~~~~~~~~~
+results_lit <- dat_lit
+results_lit$par <- factor(results_lit$par, levels = 
+                            c("mean", 0.5, 0.95), 
+                          labels = c("mean", "50%", "95%"))
+results_lit$software <- factor(results_lit$software, levels = 
+                            c("Xin et al.", "Jiang et al.", "Ma et al.", 
+                              "Kang et al.", "Li et al. (I)", "Li et al. (II)"), 
+     labels = c("Xin et al. (N = 177, \nconstant risk, vacc. unknown)", "Jiang et al. (N = 467, Omicron, \nrisk  unknown, \nvacc. unknown)", "Ma et al. (N = 40, \nexact obs., partially vacc.)", "Kang et al. (N = 93, \nconstant risk, unvacc.)", "Li et al. (N = 672, \nconstant risk, partially vacc.)", "Li et al. (II) \n(N = 885, Omicron, \nconstant risk, \npartially vacc.)"))
+
+#  ~~~~~~~~~~ Preparation - estimates  ~~~~~~~~~~
+results_tab$par <- factor(results_tab$par, levels = 
+                            c("theta", "kappa", "delta", "mean", 
+                              0.5, 0.9, 0.95, 0.99, 
+                              "Gelman diag.: lambda_gg", "Gelman diag.: r", 
+                              "Gelman diag.: b"), labels = c("theta", "kappa", 
+                                                           "delta", "mean",
+                            "50%", "90%","95%","99%","Gelman diag.: lambda_gg", 
+                            "Gelman diag.: r", "Gelman diag.: b"))
+
+results_tab$right_truncation <- factor(results_tab$right_truncation, 
+    levels = c(T, F), labels = c("trunc. addressed", "trunc. not addressed") )
+
+results_tab$data_set <- factor(results_tab$data_set, levels = c("narrow_only", 
+    "large_clusters", "full"), labels = c("exposure window 5 days or narrower", 
+                                          "largest clusters", "all data") )
+
+results_tab$exp_window <- factor(results_tab$exp_window, levels = c("strict", 
+                  "loose"), labels = c("Assumption regarding exposure: strict", "loose"))
+
+results_tab$g <- factor(results_tab$g, levels = c("constant", "exp_growth"), 
+                        labels = c("constant", "exponential growth"))
+
+results_tab$f <- factor(results_tab$f, levels = c("gamma", "GenGamma", 
+                "Weibull"), labels = c("gamma", "generalized gamma", "Weibull"))
+
+result_tab_selection <- results_tab %>% filter(par %in%  c("mean", "50%", "95%"),
+                                                 #f == "generalized gamma", 
+                                                 right_truncation == 
+                                                   "trunc. addressed",
+                                                 data_set == "all data")
+
+# To align the axes, add a space at the extremest observations. 
+# Has to be prone to facet.
+result_tab_selection$min <- NA
+result_tab_selection$min[c(1,2,3)] <- c(2,0,7)
+result_tab_selection$max <- NA
+result_tab_selection$max[c(1,2,3)] <- c(7,7,20)
+
+# To align the axes, add a space at the extremest observations. 
+# Has to be prone to facet.
+results_lit$min <- NA
+results_lit$min[c(1,2,3)] <- c(2,0,7)
+results_lit$max <- NA
+results_lit$max[c(1,2,3)] <- c(7,7,20)
+
+result_tab_selection$final_est <- NA
+result_tab_selection$final_est[which(result_tab_selection$par == "mean")] <- 3.22
+result_tab_selection$final_est[which(result_tab_selection$par == "50%")] <- 1.81
+result_tab_selection$final_est[which(result_tab_selection$par == "95%")] <- 10.98
+results_lit$final_est <- NA
+results_lit$final_est[which(results_lit$par == "mean")] <- 3.22
+results_lit$final_est[which(results_lit$par == "50%")] <- 1.81
+results_lit$final_est[which(results_lit$par == "95%")] <- 10.98
+
+#  ~~~~~~~~~~ Plot - estimates  ~~~~~~~~~~
+( fig_perc <- ggplot(data = result_tab_selection, 
+       aes(y = g_label, x = est, shape = f)) +
+  geom_vline(aes(xintercept = final_est), linetype = 3) +
+  geom_point(position = pd, size = 2, aes(), fill = "black") +
+geom_errorbar(aes(y = g_label, xmin = lower_CI, xmax = upper_CI),
+ position = pd, width = 0.3
+) + geom_text(aes(y = g_label, x = min), label = ".", alpha = 0.01) +
+  geom_text(aes(y = g_label, x = max), label = ".", alpha = 0.01) +
+                     scale_shape_manual(values = c(5,23,9)) +  
+labs(x = "Estimated latency time (infection to start-of-shedding RNA) in days", 
+         y = "Assumed infection risk within the exposure window", color = 
+     "Assumption regarding exposure", shape = "Distribution of latency time") + 
+  guides(fill = "none") +
+    
+  facet_grid2(exp_window ~ par, scale = "free_x") + 
+  theme_bw() +
+  theme(strip.text.x = element_text(face="bold"),
+          strip.text.y = element_text(face="bold"),
+          strip.background = element_rect(colour="white", fill="white"),
+        legend.position = "top")
+)
+
+#  ~~~~~~~~~~ Plot - literature  ~~~~~~~~~~
+( fig_lit <- ggplot(data = results_lit %>% filter(par %in% c("mean", "50%", "95%"), 
+software %in% c("Xin et al. (N = 177, \nconstant risk, vacc. unknown)", 
+    "Ma et al. (N = 40, \nexact obs., partially vacc.)", 
+    "Kang et al. (N = 93, \nconstant risk, unvacc.)", 
+    "Li et al. (N = 672, \nconstant risk, partially vacc.)")
+
+), 
+       aes(y = software, x = est, shape = f)) + 
+      geom_vline(aes(xintercept = final_est), linetype = 3) +
+geom_point(position = pd, size = 2, fill = "black") +
+geom_errorbar(aes(y = software, xmin = lower_CI, xmax = upper_CI),
+ position = pd, width = 0.3
+) +
+geom_text(aes(y = software, x = min), label = ".", alpha = 0.01) +
+  geom_text(aes(y = software, x = max), label = ".", alpha = 0.01) +
+  scale_shape_manual(values = c(3, 5, 9)) +
+labs(x = "Estimated latency time (infection to start-of-shedding RNA) in days", 
+         y = "Authors", fill = "Distribution of latency time", 
+     shape = "Distribution of latency time") + 
+  facet_grid2(exp_window ~ par, scale = "free_x") + 
+theme_bw() +
+  theme(strip.text.x = element_text(face="bold"),
+          strip.text.y = element_text(face="bold"),
+          strip.background = element_rect(colour="white", fill="white"),
+        legend.position = "bottom") +
+ theme(panel.background = element_rect(fill = "lightgrey"))
+)
+#  ~~~~~~~~~~ Plot - combined  ~~~~~~~~~~
+fig_percentiles <- (fig_perc / fig_lit ) + plot_annotation(tag_levels = 'a') + 
+  plot_layout(widths = c(12, 12), heights = unit(c(12, 5), c('cm','cm')))
+
+(fig_percentiles <- fig_percentiles & theme(text = 
+                                        element_text(family = "Helvetica")))
+
+ggsave("graphs/Figure_3_Estimated_percentiles.jpg", width = 10, height = 11)
+
+```
+
+
+```{r Supplemental figure Parameters}
+
+results_tab <- readRDS(paste("results/EstimatesMarch2024.RDS"))
+
+### Parameters
+
+# Delta for gamma dist always equals 1. Remove from plot data.
+results_tab$est[which(results_tab$par == "delta" & 
+                        results_tab$f == "gamma")] <- NA
+results_tab$lower_CI[which(results_tab$par == "delta" & 
+                             results_tab$f == "gamma")] <- NA
+results_tab$upper_CI[which(results_tab$par == "delta" & 
+                             results_tab$f == "gamma")] <- NA
+
+results_tab$g_dataset_combined <- paste(results_tab$g, results_tab$data_set)
+
+results_tab$y_factor  <- factor(results_tab$g_dataset_combined, 
+                                   levels = c("exp_growth narrow_only",
+                                              "exp_growth full",
+                                              "constant narrow_only",
+                                              "constant full"), 
+                                   labels = c("exponential growth (up to 4 days)",
+                                              "exponential growth (all observations)",
+                                              "constant (up to 4 days)",
+                                              "constant (all observations)"))
+
+results_tab$exp_window <- factor(results_tab$exp_window, 
+                                   levels = c("strict", "loose"), 
+                                   labels = c("Ass.~reg.~exposure:~strict", 
+                                  "loose"))
+
+dat_for_p <- results_tab %>% filter(par %in% c("theta", "kappa", "delta"),
+                                    right_truncation == T,
+                                                 data_set == "full"
+                                    )
+
+dat_for_p$par_symbols  <- factor(dat_for_p$par, 
+                                   levels = c("theta", "kappa", "delta"), 
+                                   labels = c(bquote(hat(theta)), 
+                                   bquote(hat(kappa)), 
+                                   bquote(hat(delta))))
+
+pd <- position_dodge(0.5) 
+
+
+( fig_par <- ggplot(data = dat_for_p, 
+       aes(y = g_label, x = est, shape = f)) + 
+geom_point(position = pd, size = 2, fill = "black") +
+geom_errorbar(aes(y = g_label, xmin = lower_CI, xmax = upper_CI),
+ position = pd, width = 0.3
+) + scale_shape_manual(values = c(5,23,9
+                                )) +
+labs(x = "", shape = "Distribution of latency time",
+         y = "Infection risk within the exposure window (widths)"
+    ) +
+guides(fill = "none") +
+    facet_grid2(exp_window ~ par_symbols, 
+                scale = "free_x", labeller = label_parsed) + 
+theme_bw() +
+  theme(strip.text.x = element_text(face="bold"),
+          strip.text.y = element_text(face="bold"),
+          strip.background = element_rect(colour="black", fill="lightgrey"),
+        legend.position = "top")
+)
+
+ggsave("graphs/Supplemental_figure_Estimated_parameters.jpg", width = 10, height = 6)
+
+```
+
+
+```{r Supplemental figure Estimates}
+
+results_tab <- readRDS(paste("results/EstimatesMarch2024.RDS"))
+
+results_tab$par <- factor(results_tab$par, levels = 
+                            c("theta", "kappa", "delta", "mean", "variance", 
+                              0.5, 0.9, 0.95, 0.99, "Gelman diag.: lambda_gg", 
+                              "Gelman diag.: r", "Gelman diag.: b"), 
+                          labels = c("theta", "kappa", "delta", "mean", 
+                "variance", "50%", "90%","95%","99%","Gelman diag.: lambda_gg", 
+                "Gelman diag.: r", "Gelman diag.: b"))
+
+results_tab$g_dataset_combined <- paste(results_tab$g, results_tab$data_set)
+
+results_tab$y_factor  <- factor(results_tab$g_dataset_combined, 
+                                   levels = c("exp_growth narrow_only",
+                                              "exp_growth full",
+                                              "constant narrow_only",
+                                              "constant full"), 
+                                   labels = c("exponential growth (up to 4 days)",
+                                              "exponential growth (all observations)",
+                                              "constant (up to 4 days)",
+                                              "constant (all observations)"))
+
+results_tab$right_truncation <- ifelse(results_tab$right_truncation == T, 
+                                       "Truncation_addressed", "Truncation_unaddressed")
+results_tab$right_truncation <- factor(results_tab$right_truncation, 
+                                   levels = c("Truncation_addressed", "Truncation_unaddressed"), 
+                                   labels = c("Truncation: addressed", "not addressed"))
+results_tab$exp_window <- factor(results_tab$exp_window, 
+                                   levels = c("strict", "loose"), 
+                                   labels = c("Ass. reg. exposure: strict", 
+                                  "loose"))
+dat_for_p <- results_tab %>% filter(par %in% c("mean", "50%", "95%"), 
+                                    f == "GenGamma", r == 0.1058827)
+
+
+pd <- position_dodge(0.9) 
+
+dat_for_p$final_est <- NA
+dat_for_p$final_est[which(dat_for_p$par == "mean")] <- 3.22
+dat_for_p$final_est[which(dat_for_p$par == "50%")] <- 1.81
+dat_for_p$final_est[which(dat_for_p$par == "95%")] <- 10.98
+
+
+( fig_perc <- ggplot(data = dat_for_p, 
+       aes(y = y_factor, x = est, shape = f)) + 
+      geom_vline(aes(xintercept = final_est), linetype = 3) +
+geom_point(position = pd, size = 2, fill = "black") +
+geom_errorbar(aes(y = y_factor, xmin = lower_CI, xmax = upper_CI),
+ position = pd, width = 0.3
+) + scale_shape_manual(values = c(23, 9
+                                )) +
+labs(x = "Estimated latency time (infection to start-of-shedding RNA) in days", 
+         y = "Infection risk within the exposure window (widths)"
+    ) +
+guides(fill = "none", shape = "none") +
+    facet_grid2(exp_window + right_truncation ~ par, 
+                scale = "free_x") + 
+theme_bw() +
+  theme(strip.text.x = element_text(face="plain"),
+          strip.text.y = element_text(face="plain"),
+          strip.background = element_rect(colour="black", fill="lightgrey"),
+        legend.position = "top")
+)
+
+fig_percentiles <- fig_perc & theme(text = element_text(family = "Helvetica"))
+
+ggsave("graphs/Supplemental_figure_Estimated_percentiles.jpg", width = 10, height = 8)
+
+```
+
+
+```{r Estimated probability density function}
+
+cols <- cols_inct <- "blue"
+
+# GG x exponential
+# strict
+theta <- 0.15                   
+theta_lower <-  0.02
+theta_upper <- 6.11
+
+kappa <-  1.5                    
+kappa_lower <- 0.54
+kappa_upper <- 2.12
+
+delta <-  0.45                
+delta_lower <-  0.36  
+delta_upper <-  1.11
+
+# Plot PDF
+
+( Fig_distributions <- ggplot() +
+
+  geom_line(aes(x = seq(0, 26, by= 0.01), y = dgengamma.orig(x = seq(0, 26, by = 0.01), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1])), size = 1, color = "darkblue") +
+  geom_area(aes(x = seq(0, qgengamma.orig(p = 0.9, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), by= 0.01), y = dgengamma.orig(x = seq(0, qgengamma.orig(p = 0.9, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), by= 0.01), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1])), fill = "darkblue", alpha = 0.3, size = 1) +
+
+ scale_color_manual(values = cols[1:3]) +
+
+    geom_segment(aes(x = qgengamma.orig(p = 0.5, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), xend = qgengamma.orig(p = 0.5, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = dgengamma.orig(x = qgengamma.orig(p = 0.5, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) - 0.04, yend = dgengamma.orig(x = qgengamma.orig(p = 0.5, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, linetype = "50%"),  size = 1, color = "darkblue") +
+    
+    geom_segment(aes(x = qgengamma.orig(p = 0.9, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), xend = qgengamma.orig(p = 0.90, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = dgengamma.orig(x = qgengamma.orig(p = 0.90, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) - 0.04, yend = dgengamma.orig(x = qgengamma.orig(p = 0.90, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, linetype = "90%"), size = 1, color = "darkblue") +
+    
+    geom_segment(aes(x = qgengamma.orig(p = 0.95, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), xend = qgengamma.orig(p = 0.95, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = dgengamma.orig(x = qgengamma.orig(p = 0.95, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) - 0.04, yend = dgengamma.orig(x = qgengamma.orig(p = 0.95, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, linetype = "95%"), size = 0.7, color = "darkblue") +
+    
+        geom_segment(aes(x = qgengamma.orig(p = 0.975, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), xend = qgengamma.orig(p = 0.975, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = dgengamma.orig(x = qgengamma.orig(p = 0.975, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) - 0.04, yend = dgengamma.orig(x = qgengamma.orig(p = 0.975, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, linetype = "97.5%"), size = 0.7, color = "darkblue") +
+    
+        geom_segment(aes(x = qgengamma.orig(p = 0.99, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), xend = qgengamma.orig(p = 0.99, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = dgengamma.orig(x = qgengamma.orig(p = 0.99, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) - 0.04, yend = dgengamma.orig(x = qgengamma.orig(p = 0.99, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, linetype = "99%"), size = 0.7, color = "darkblue") +
+    
+    
+         annotate("text", x = 1 + qgengamma.orig(p = 0.5, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = 0.015 + dgengamma.orig(x = qgengamma.orig(p = 0.5, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, label = "50%", size = 4, color = "darkblue") +
+    
+          annotate("text", x = 0.5 + qgengamma.orig(p = 0.9, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = 0.015 + dgengamma.orig(x = qgengamma.orig(p = 0.9, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, label = "90%", size = 4, color = "darkblue") +
+  
+         annotate("text", x = 0.5 + qgengamma.orig(p = 0.95, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = 0.015 + dgengamma.orig(x = qgengamma.orig(p = 0.95, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, label = "95%", size = 4, color = "darkblue") +
+
+         annotate("text", x = 0.5 + qgengamma.orig(p = 0.975, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = 0.015 + dgengamma.orig(x = qgengamma.orig(p = 0.975, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, label = "97.5%", size = 4, color = "darkblue") +
+    
+     annotate("text", x = 0.5 + qgengamma.orig(p = 0.99, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), y = 0.015 + dgengamma.orig(x = qgengamma.orig(p = 0.99, shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]), shape = delta[1], scale = theta[1], k = kappa[1]/delta[1]) + 0.04, label = "99%", size = 4, color = "darkblue") +
+    
+    scale_linetype_manual(values = rep(1,5)) +
+    
+  # Layout
+     theme(panel.background = element_rect(fill = "white", colour = "black",  size = 0.5, linetype = "solid")) + 
+    theme(panel.grid.major = element_line(colour = "grey"), panel.grid.minor = element_line(colour = "grey")) +
+    labs(x = "Latency time (days)", y = "Probability", color = "Percentile", linetype = "Percentile",
+subtitle = "") + 
+  theme(axis.line = element_line(size = 0.3, colour = "black", linetype=1), legend.position = "top",
+        legend.title = element_text(size=11), legend.text = element_text(size=11)) +
+guides(linetype = "none") +
+theme(legend.key = element_rect(colour = NA, fill = NA)) +
+   expand_limits(x = 0, y = 0)
+) & theme(text = element_text(family = "Helvetica"))
+
+ggsave("graphs/Supplement_Figure_Estimated_latency_time_distributions.jpeg", width = 6, height = 4)
+
+```
+
